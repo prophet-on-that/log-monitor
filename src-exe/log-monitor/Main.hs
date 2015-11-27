@@ -64,6 +64,7 @@ maybeToEither a Nothing
 maybeToEither _ (Just b)
   = Right b
 
+-- | May throw 'LogMonitorException'
 readSource
   :: UTCTime -- ^ Lower bound on message time (exclusive)
   -> UTCTime -- ^ Upper bound on message time (inclusive)
@@ -136,7 +137,13 @@ main = do
           debugM logHandler "Monitoring.."
           sources'' <- filterM (exists . sourcePath) sources'
           now <- getCurrentTime
-          messageMaps <- zip sources'' <$> mapM (readSource previousTime now) sources''
+          let
+            handler (LogParsingFailed (T.unpack -> sourceName') e) = do
+              warningM (logHandler <> "." <> sourceName') $ "Log parsing failed: " <> e
+              return Map.empty
+
+          messageMaps <- fmap (zip sources'') . forM sources'' $
+            handle handler . readSource previousTime now
           let
             messageMaps'
               = filter (not . Map.null . snd) messageMaps
