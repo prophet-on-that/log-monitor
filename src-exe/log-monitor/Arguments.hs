@@ -48,11 +48,11 @@ parseArgs
              <> help "Log additional debugging information"
               )
           )
-      
 
 opts
   = info (helper <*> parseArgs)
       ( header "Monitor hslogger-logs and email in case of error."
      <> fullDesc
+     <> footer "Log file formats require $msg, $loggername, $utcTime and $prio."
       )
     

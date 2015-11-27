@@ -4,17 +4,19 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE FlexibleContexts #-}
 
 module Main where
 
 import qualified Arguments
 
-import System.Log.Reader
+import System.Log.Reader hiding (LogMessage (..))
+import qualified System.Log.Reader as R
 import qualified Data.Text as T
 import Data.Time
 import qualified Data.Text.Lazy as L
 import qualified Data.Text.Lazy.IO as L
-import Data.Attoparsec.Text.Lazy
+import Data.Attoparsec.Text.Lazy (eitherResult, takeTill, parse, isHorizontalSpace)
 import Control.Exception
 import Data.Typeable
 import Data.Foldable
@@ -34,12 +36,21 @@ import System.Log.Logger
 import System.Log.Handler.Simple (fileHandler)
 import System.Log.Formatter
 import System.Log.Handler (setFormatter)
+import Data.List (sortBy)
+import Data.Ord (comparing, Down (..))
 
 data LogMonitorException
   = LogParsingFailed SourceName String
   deriving (Show, Typeable)
 
-instance Exception LogMonitorException           
+instance Exception LogMonitorException
+
+data LogMessage = LogMessage
+  { message :: T.Text
+  , loggerName :: T.Text
+  , priority :: Priority
+  , timestamp :: UTCTime
+  } deriving (Show)
 
 type SourceName = T.Text
 
@@ -78,15 +89,19 @@ readSource minTime maxTime source = do
       let
         f messageMap lt = do
           lm <- eitherResult . parse parser $ lt
-          timestamp' <- maybeToEither "No timestamp in format" . fmap zonedTimeToUTC . timestamp $ lm
-          priority' <- maybeToEither "No priority in format" . priority $ lm
+          message' <- maybeToEither "No message in format" . R.message $ lm
+          loggerName' <- maybeToEither "No loggerName in format" . R.loggerName $ lm
+          timestamp' <- maybeToEither "No timestamp in format" . fmap zonedTimeToUTC . R.timestamp $ lm
+          priority' <- maybeToEither "No priority in format" . R.priority $ lm
           if minTime < timestamp' && timestamp' <= maxTime && priority' >= (minPriority source)
             then do
               let
+                newMessage
+                  = LogMessage message' loggerName' priority' timestamp'
                 alter Nothing
-                  = Just [lm]
+                  = Just [newMessage]
                 alter (Just lms)
-                  = Just $ lm : lms
+                  = Just $ newMessage : lms
               return $ Map.alter alter priority' messageMap
             else
               return messageMap
@@ -117,13 +132,33 @@ toMail (T.pack -> hostName) addrs messageMaps
       where
         toMessage :: (Source, Map Priority [LogMessage]) -> L.Text
         toMessage (toLazyText . fromText . sourceName -> sourceName', messageMap) 
-          = sourceName' <> ": " <> priorityPhrases
+          = L.unlines $ header : L.empty : samples
           where
-            priorityPhrases
-              = L.intercalate ", " $ Map.foldMapWithKey ((return .) . buildPhrase) messageMap
+            header :: L.Text
+            header
+              = "Exceptions in " <> sourceName' <> ": " <> priorityPhrases
               where
-                buildPhrase prio (length -> msgCount)
-                  = L.pack $ show prio <> " - " <> show msgCount 
+                priorityPhrases
+                  = L.intercalate ", " $ Map.foldMapWithKey (((return . L.pack) .) . buildPhrase) messageMap
+                  where
+                    buildPhrase prio (length -> 1)
+                      = "1 " <> show prio
+                    buildPhrase prio (length -> msgCount)
+                      = show msgCount <> " " <> show prio <> "s"
+
+            samples :: [L.Text]
+            samples
+              = map (toLazyText . fromText . buildSample) . take sampleCount . concatMap snd . sortBy (comparing $ Down . fst) . Map.toList $ messageMap
+              where
+                sampleCount
+                  = 5
+                    
+                buildSample :: LogMessage -> T.Text
+                buildSample lm 
+                  = T.take maxChars $ (T.pack . show . priority) lm <> " " <> loggerName lm <> ": " <> message lm
+                  where
+                    maxChars
+                      = 120
   
 main = do
   arguments <- execParser Arguments.opts
