@@ -30,6 +30,7 @@ import Data.Yaml
 import GHC.Generics
 import System.Directory (doesFileExist)
 import Options.Applicative (execParser)
+import Control.Concurrent (threadDelay)
 
 data LogMonitorException
   = LogParsingFailed SourceName String
@@ -61,10 +62,11 @@ maybeToEither _ (Just b)
   = Right b
 
 readSource
-  :: UTCTime -- ^ Lower bound on message time
+  :: UTCTime -- ^ Lower bound on message time (exclusive)
+  -> UTCTime -- ^ Upper bound on message time (inclusive)
   -> Source
   -> IO (Map Priority [LogMessage]) -- ^ Log message are stored in descending order of timestamp
-readSource minTime source = do
+readSource minTime maxTime source = do 
   lts <- L.lines <$> L.readFile (sourcePath source)
   let
     messageMap = do
@@ -72,9 +74,9 @@ readSource minTime source = do
       let
         f messageMap lt = do
           lm <- eitherResult . parse parser $ lt
-          timestamp' <- maybeToEither "No timestamp in format" . timestamp $ lm
-          priority' <- maybeToEither "No priority in format" . priority $ lm 
-          if minTime >= zonedTimeToUTC timestamp' && priority' >= (minPriority source)
+          timestamp' <- maybeToEither "No timestamp in format" . fmap zonedTimeToUTC . timestamp $ lm
+          priority' <- maybeToEither "No priority in format" . priority $ lm
+          if minTime < timestamp' && timestamp' <= maxTime && priority' >= (minPriority source)
             then
               return $ Map.adjust (lm :) priority' messageMap
             else
@@ -121,17 +123,25 @@ main = do
     Left err ->
       putStrLn . prettyPrintParseException $ err
     Right (Config recipients' sources') -> do
-      sources'' <- filterM (doesFileExist . sourcePath) sources'
-      now <- getCurrentTime
       let
-        minTime
-          = addUTCTime (- Arguments.runRate arguments) now
-      messageMaps <- zip sources'' <$> mapM (readSource minTime) sources''
-      let
-        messageMaps'
-          = filter (not . Map.null . snd) messageMaps
-      when (not . null $ messageMaps') $ do
-        hostName <- getHostName
-        renderSendMail $ toMail hostName recipients' messageMaps'
+        runRate
+          = Arguments.runRate arguments
+            
+        monitor :: UTCTime -> IO ()
+        monitor previousTime = do
+          sources'' <- filterM (doesFileExist . sourcePath) sources'
+          now <- getCurrentTime
+          messageMaps <- zip sources'' <$> mapM (readSource previousTime now) sources''
+          let
+            messageMaps'
+              = filter (not . Map.null . snd) messageMaps
+          when (not . null $ messageMaps') $ do
+            hostName <- getHostName
+            renderSendMail $ toMail hostName recipients' messageMaps'
+          threadDelay (truncate $ 1000000 * runRate)
+          monitor now
+
+      now <- addUTCTime (-runRate) <$> getCurrentTime
+      monitor now
         
       
