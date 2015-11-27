@@ -26,4 +26,6 @@ executable log-monitor
     , containers == 0.5.*
     , hostname == 1.0.*
     , mime-mail == 0.4.*
+    , yaml == 0.8.*
+    , directory == 1.2.*
   ghc-options: -W

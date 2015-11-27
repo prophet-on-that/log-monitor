@@ -1,5 +1,9 @@
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TupleSections #-}
 
 module Main where
 
@@ -20,6 +24,9 @@ import Network.Mail.Mime
 import Control.Monad
 import Data.Monoid
 import Data.Text.Lazy.Builder (toLazyText, fromText)
+import Data.Yaml
+import GHC.Generics
+import System.Directory (doesFileExist)
 
 data LogMonitorException
   = LogParsingFailed SourceName String
@@ -28,13 +35,21 @@ data LogMonitorException
 instance Exception LogMonitorException           
 
 type SourceName = T.Text
+
+deriving instance Generic Priority
+deriving instance FromJSON Priority
   
 data Source = Source
   { sourceName :: SourceName
   , sourcePath :: FilePath
   , formatString :: FormatString
   , minPriority :: Priority
-  }
+  } deriving (Generic, FromJSON)
+
+data Config = Config
+  { recipients :: [T.Text]
+  , sources :: [Source]
+  } deriving (Generic, FromJSON)
   
 maybeToEither :: a -> Maybe b -> Either a b
 maybeToEither a Nothing
@@ -75,17 +90,16 @@ toMail
   :: HostName
   -> [T.Text] -- ^ Recipient email addresses
   -> [(Source, Map Priority [LogMessage])]
-  -> Maybe Mail
-toMail (T.pack -> hostName) addrs (filter (Map.null . snd) -> sources) = do
-  guard . not . null $ sources
-  return $ Mail hostAddress recipients [] [] [] [[plainPart body]]
+  -> Mail
+toMail (T.pack -> hostName) addrs messageMaps 
+  = Mail hostAddress recipients [] [] [] [[plainPart body]]
   where
     hostAddress
       = Address (Just $ "Log Monitor " <> hostName) ("noReply@" <> hostName)
     recipients
       = map (Address Nothing) addrs
     body
-      = L.unlines . map toMessage $ sources
+      = L.unlines . map toMessage $ messageMaps
       where
         toMessage :: (Source, Map Priority [LogMessage]) -> L.Text
         toMessage (toLazyText . fromText . sourceName -> sourceName', messageMap) 
@@ -98,4 +112,28 @@ toMail (T.pack -> hostName) addrs (filter (Map.null . snd) -> sources) = do
                   = L.pack $ show prio <> " - " <> show msgCount 
   
 main = do
-  undefined
+  let
+    filePath
+      = undefined
+  config <- decodeFileEither filePath
+  case config of
+    Left err ->
+      putStrLn . prettyPrintParseException $ err
+    Right (Config recipients' sources') -> do
+      sources'' <- filterM (doesFileExist . sourcePath) sources'
+      now <- getCurrentTime
+      let
+        -- In minutes
+        refreshTime
+          = 5 
+        minTime
+          = addUTCTime (-60 * refreshTime) now
+      messageMaps <- zip sources'' <$> mapM (readSource minTime) sources''
+      let
+        messageMaps'
+          = filter (not . Map.null . snd) messageMaps
+      when (not . null $ messageMaps') $ do
+        hostName <- getHostName
+        renderSendMail $ toMail hostName recipients' messageMaps'
+        
+      
