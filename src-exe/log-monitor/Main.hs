@@ -190,7 +190,20 @@ main = do
           when (not . null $ messageMaps') $ do
             hostName <- getHostName
             infoM logHandler "Mailing.."
-            renderSendMail $ toMail hostName recipients' messageMaps'
+            let
+              mail
+                = toMail hostName recipients' messageMaps'
+              mailWithSubject
+                = mail
+                    { mailHeaders = subject : mailHeaders mail }
+                where
+                  subject
+                    = ("Subject", subjectLine)
+                    where
+                      subjectLine
+                        = "Exceptions in " <> T.intercalate ", " (map (sourceName . fst) . toList $ messageMaps)
+                      
+            renderSendMail mailWithSubject
           threadDelay (truncate $ 1000000 * runRate)
           monitor now
 
