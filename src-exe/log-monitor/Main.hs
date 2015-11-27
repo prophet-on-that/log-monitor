@@ -7,6 +7,8 @@
 
 module Main where
 
+import qualified Arguments
+
 import System.Log.Reader
 import System.Log.Logger (Priority (..))
 import qualified Data.Text as T
@@ -27,6 +29,7 @@ import Data.Text.Lazy.Builder (toLazyText, fromText)
 import Data.Yaml
 import GHC.Generics
 import System.Directory (doesFileExist)
+import Options.Applicative (execParser)
 
 data LogMonitorException
   = LogParsingFailed SourceName String
@@ -112,10 +115,8 @@ toMail (T.pack -> hostName) addrs messageMaps
                   = L.pack $ show prio <> " - " <> show msgCount 
   
 main = do
-  let
-    filePath
-      = undefined
-  config <- decodeFileEither filePath
+  arguments <- execParser Arguments.opts
+  config <- decodeFileEither (Arguments.configFile arguments)
   case config of
     Left err ->
       putStrLn . prettyPrintParseException $ err
@@ -123,11 +124,8 @@ main = do
       sources'' <- filterM (doesFileExist . sourcePath) sources'
       now <- getCurrentTime
       let
-        -- In minutes
-        refreshTime
-          = 5 
         minTime
-          = addUTCTime (-60 * refreshTime) now
+          = addUTCTime (- Arguments.runRate arguments) now
       messageMaps <- zip sources'' <$> mapM (readSource minTime) sources''
       let
         messageMaps'
