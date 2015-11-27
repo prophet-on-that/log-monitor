@@ -10,6 +10,8 @@ import Data.Time
 data Arguments = Arguments
   { runRate :: NominalDiffTime
   , configFile :: FilePath
+  , logFile :: FilePath
+  , debug :: Bool
   }
 
 setDefault :: Alternative m => a -> m a -> m a
@@ -23,7 +25,7 @@ parseArgs
               ( short 'r'
              <> long "runRate"
              <> metavar "INT"
-             <> help "Rough interval (in seconds) between runs of log-monitor. Default 5m."
+             <> help "Rough interval (in seconds) between runs of log-monitor (default 300s)"
               )
           )
       <*> ( setDefault "log-monitor.yaml" . strOption $
@@ -33,6 +35,20 @@ parseArgs
              <> help "Path to config file (default log-monitor.yaml)"
               )
           )
+      <*> ( setDefault "log-monitor.log" . strOption $
+              ( short 'l'
+             <> long "log-file"
+             <> metavar "FILE"
+             <> help "File to store log-monitor logs (default log-monitor.log)"
+              )
+          )
+      <*> ( switch $
+              ( short 'd'
+             <> long "debug"
+             <> help "Log additional debugging information"
+              )
+          )
+      
 
 opts
   = info (helper <*> parseArgs)

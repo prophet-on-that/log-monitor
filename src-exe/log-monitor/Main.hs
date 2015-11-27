@@ -10,7 +10,6 @@ module Main where
 import qualified Arguments
 
 import System.Log.Reader
-import System.Log.Logger (Priority (..))
 import qualified Data.Text as T
 import Data.Time
 import qualified Data.Text.Lazy as L
@@ -31,6 +30,10 @@ import GHC.Generics
 import System.Directory (doesFileExist)
 import Options.Applicative (execParser)
 import Control.Concurrent (threadDelay)
+import System.Log.Logger
+import System.Log.Handler.Simple (fileHandler)
+import System.Log.Formatter
+import System.Log.Handler (setFormatter)
 
 data LogMonitorException
   = LogParsingFailed SourceName String
@@ -123,13 +126,15 @@ main = do
     Left err ->
       putStrLn . prettyPrintParseException $ err
     Right (Config recipients' sources') -> do
+      initLogging (Arguments.debug arguments) (Arguments.logFile arguments)
       let
         runRate
           = Arguments.runRate arguments
             
         monitor :: UTCTime -> IO ()
         monitor previousTime = do
-          sources'' <- filterM (doesFileExist . sourcePath) sources'
+          debugM logHandler "Monitoring.."
+          sources'' <- filterM (exists . sourcePath) sources'
           now <- getCurrentTime
           messageMaps <- zip sources'' <$> mapM (readSource previousTime now) sources''
           let
@@ -137,11 +142,34 @@ main = do
               = filter (not . Map.null . snd) messageMaps
           when (not . null $ messageMaps') $ do
             hostName <- getHostName
+            infoM logHandler "Mailing.."
             renderSendMail $ toMail hostName recipients' messageMaps'
           threadDelay (truncate $ 1000000 * runRate)
           monitor now
 
       now <- addUTCTime (-runRate) <$> getCurrentTime
       monitor now
-        
-      
+  where
+    initLogging :: Bool -> FilePath -> IO ()
+    initLogging debug logFile = do
+      -- Do not log to the standard error
+      updateGlobalLogger rootLoggerName removeHandler
+
+      -- Log to file instead
+      h <- do
+        lh <- fileHandler logFile DEBUG
+        return $ setFormatter lh (simpleLogFormatter "[$utcTime $loggername $prio] $msg")
+      updateGlobalLogger rootLoggerName (addHandler h)
+
+      -- Listen to all messages on 'LogMonitor' loggers
+      updateGlobalLogger "LogMonitor" (setLevel $ if debug then DEBUG else INFO)
+
+    exists :: FilePath -> IO Bool
+    exists path = do
+      b <- doesFileExist path
+      when (not b) $
+        infoM logHandler $ "File " <> path <> " does not exist"
+      return b
+
+    logHandler
+      = "LogMonitor"
