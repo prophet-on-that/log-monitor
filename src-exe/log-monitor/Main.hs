@@ -51,12 +51,12 @@ data Source = Source
   , sourcePath :: FilePath
   , formatString :: FormatString
   , minPriority :: Priority
-  } deriving (Generic, FromJSON)
+  } deriving (Show, Generic, FromJSON)
 
 data Config = Config
   { recipients :: [T.Text]
   , sources :: [Source]
-  } deriving (Generic, FromJSON)
+  } deriving (Show, Generic, FromJSON)
   
 maybeToEither :: a -> Maybe b -> Either a b
 maybeToEither a Nothing
@@ -81,8 +81,13 @@ readSource minTime maxTime source = do
           timestamp' <- maybeToEither "No timestamp in format" . fmap zonedTimeToUTC . timestamp $ lm
           priority' <- maybeToEither "No priority in format" . priority $ lm
           if minTime < timestamp' && timestamp' <= maxTime && priority' >= (minPriority source)
-            then
-              return $ Map.adjust (lm :) priority' messageMap
+            then do
+              let
+                alter Nothing
+                  = Just [lm]
+                alter (Just lms)
+                  = Just $ lm : lms
+              return $ Map.alter alter priority' messageMap
             else
               return messageMap
       foldlM f Map.empty lts
@@ -154,8 +159,8 @@ main = do
           threadDelay (truncate $ 1000000 * runRate)
           monitor now
 
-      now <- addUTCTime (-runRate) <$> getCurrentTime
-      monitor now
+      minTime <- addUTCTime (-runRate) <$> getCurrentTime
+      monitor minTime 
   where
     initLogging :: Bool -> FilePath -> IO ()
     initLogging debug logFile = do
