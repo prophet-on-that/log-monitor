@@ -38,6 +38,7 @@ import System.Log.Formatter
 import System.Log.Handler (setFormatter)
 import Data.List (sortBy)
 import Data.Ord (comparing, Down (..))
+import Control.Concurrent.Async (mapConcurrently)
 
 data LogMonitorException
   = LogParsingFailed SourceName String
@@ -182,8 +183,7 @@ main = do
               warningM (logHandler <> "." <> sourceName') $ "Log parsing failed: " <> e
               return Map.empty
 
-          messageMaps <- fmap (zip sources'') . forM sources'' $
-            handle handler . readSource previousTime now
+          messageMaps <- fmap (zip sources'') $ mapConcurrently (handle handler . readSource previousTime now) sources''
           let
             messageMaps'
               = filter (not . Map.null . snd) messageMaps
