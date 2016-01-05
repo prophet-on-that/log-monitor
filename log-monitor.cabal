@@ -10,6 +10,20 @@ homepage: http://github.com/prophet-on-that/log-monitor
 bug-reports: http://github.com/prophet-on-that/log-monitor/issues
 cabal-version: >=1.10
 category: Interfaces, Parsing
+description:
+  An executable to monitor <http://hackage.haskell.org/package/hslogger hslogger> produced logs. The program reads a <http://www.yaml.org YAML> configuration file on startup (/log-monitor.yaml/ by default), which must specify a list of /recipients/ and a list of /sources/. Sources represent log files to monitor, and must specify the /sourcePath/, a /sourceName/, the hslogger /formatString/ and the minimum priority (/minPriority/) to report. The format of the logs require $msg, $loggername, $utcTime and $prio fields. Here's an example of a /log-monitor.yaml/ file.
+  . 
+  > recipients: 
+  > - recipient@provider.com
+  > sources: 
+  > - sourceName: web-server
+  >   sourcePath: /home/user/web-server/log
+  >   formatString: "[$utcTime $loggername $prio] $msg"
+  >   minPriority: WARNING
+  > - sourceName: email-server
+  >   sourcePath: /home/user/email-server/log
+  >   formatString: "[$utcTime $loggername $prio] $msg"
+  >   minPriority: INFO
 
 executable log-monitor
   hs-source-dirs: src-exe/log-monitor
