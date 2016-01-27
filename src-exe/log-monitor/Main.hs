@@ -201,7 +201,7 @@ main = do
                     = ("Subject", subjectLine)
                     where
                       subjectLine
-                        = "Exceptions in " <> T.intercalate ", " (map (sourceName . fst) . toList $ messageMaps)
+                        = "Exceptions in " <> T.intercalate ", " (map (sourceName . fst) . toList $ messageMaps')
                       
             renderSendMail mailWithSubject
           threadDelay (truncate $ 1000000 * runRate)
