@@ -159,7 +159,7 @@ toMail (T.pack -> hostName) addrs messageMaps
                   = T.take maxChars $ (T.pack . show . priority) lm <> " " <> loggerName lm <> ": " <> message lm
                   where
                     maxChars
-                      = 120
+                      = 300
   
 main = do
   arguments <- execParser Arguments.opts
