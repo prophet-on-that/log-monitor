@@ -155,11 +155,16 @@ toMail (T.pack -> hostName) addrs messageMaps
                   = 5
                     
                 buildSample :: LogMessage -> T.Text
-                buildSample lm 
-                  = T.take maxChars $ (T.pack . show . priority) lm <> " " <> loggerName lm <> ": " <> message lm
+                buildSample lm
+                  | T.length msg > maxChars
+                      = T.take maxChars msg <> "..."
+                  | otherwise
+                      = msg
                   where
                     maxChars
                       = 300
+                    msg
+                      = (T.pack . show . priority) lm <> " " <> loggerName lm <> ": " <> message lm
   
 main = do
   arguments <- execParser Arguments.opts
