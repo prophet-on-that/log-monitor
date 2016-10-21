@@ -9,7 +9,7 @@
 
 module Main where
 
-import qualified Arguments
+import Arguments
 
 import System.Log.Reader hiding (LogMessage (..))
 import qualified System.Log.Reader as R
@@ -166,17 +166,14 @@ toMail (T.pack -> hostName) addrs messageMaps
                       = (T.pack . show . priority) lm <> " " <> loggerName lm <> ": " <> message lm
   
 main = do
-  arguments <- execParser Arguments.opts
-  config <- decodeFileEither (Arguments.configFile arguments)
+  Arguments {..} <- execParser opts
+  config <- decodeFileEither configFile
   case config of
     Left err ->
       putStrLn . prettyPrintParseException $ err
     Right (Config recipients' sources') -> do
-      initLogging (Arguments.debug arguments) (Arguments.logFile arguments)
+      initLogging debug logFile
       let
-        runRate
-          = Arguments.runRate arguments
-            
         monitor :: UTCTime -> IO ()
         monitor previousTime = do
           debugM logHandler "Monitoring.."
