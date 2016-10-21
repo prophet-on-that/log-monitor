@@ -69,6 +69,7 @@ data Source = Source
 
 data Config = Config
   { recipients :: [T.Text]
+  , admins :: [T.Text]
   , sources :: [Source]
   } deriving (Show, Generic, FromJSON)
   
@@ -78,12 +79,14 @@ maybeToEither a Nothing
 maybeToEither _ (Just b)
   = Right b
 
+type ParseErrorCount = Integer
+
 -- | May throw 'LogMonitorException'
 readSource
   :: UTCTime -- ^ Lower bound on message time (exclusive)
   -> UTCTime -- ^ Upper bound on message time (inclusive)
   -> Source
-  -> IO (Map Priority [LogMessage]) -- ^ Log message are stored in descending order of timestamp
+  -> IO (ParseErrorCount, Map Priority [LogMessage]) -- ^ Log message are stored in descending order of timestamp
 readSource minTime maxTime Source {..} = do 
   lts <- L.lines <$> L.readFile sourcePath
   case logMessageParser formatString loggerNameParser of
@@ -91,8 +94,8 @@ readSource minTime maxTime Source {..} = do
       throw $ InvalidParser sourceName err
     Right parser -> do
       let
-        helper messageMap lt
-          = fromMaybe messageMap $ do
+        helper (errorCount, messageMap) lt
+          = fromMaybe (errorCount + 1, messageMap) $ do
               lm <- maybeResult . parse parser $ lt
               message' <- R.message lm
               loggerName' <- R.loggerName lm
@@ -107,24 +110,22 @@ readSource minTime maxTime Source {..} = do
                       = Just [newMessage]
                     alter (Just lms)
                       = Just $ newMessage : lms
-                  return $ Map.alter alter priority' messageMap
+                  return (errorCount, Map.alter alter priority' messageMap)
                 else
-                  return messageMap
-      return $ foldl' helper Map.empty lts
+                  return (errorCount, messageMap)
+      return $ foldl' helper (0, Map.empty) lts
   where
     loggerNameParser
       = takeTill isHorizontalSpace
 
 toMail
-  :: HostName
-  -> [T.Text] -- ^ Recipient email addresses
+  :: Address -- ^ Host address.
+  -> [T.Text] -- ^ Recipient email addresses.
   -> [(Source, Map Priority [LogMessage])]
   -> Mail
-toMail (T.pack -> hostName) addrs messageMaps 
+toMail hostAddress addrs messageMaps 
   = Mail hostAddress recipients [] [] [] [[plainPart body]]
   where
-    hostAddress
-      = Address (Just $ "Log Monitor " <> hostName) ("noReply@" <> hostName)
     recipients
       = map (Address Nothing) addrs
     body
@@ -164,36 +165,42 @@ toMail (T.pack -> hostName) addrs messageMaps
                       = 300
                     msg
                       = (T.pack . show . priority) lm <> " " <> loggerName lm <> ": " <> message lm
-  
+
 main = do
   Arguments {..} <- execParser opts
   config <- decodeFileEither configFile
   case config of
     Left err ->
       putStrLn . prettyPrintParseException $ err
-    Right (Config recipients' sources') -> do
+    Right Config {..}  -> do
       initLogging debug logFile
+      
+      hostAddress <- do
+        hostName <- T.pack <$> getHostName
+        return $ Address (Just $ "Log Monitor " <> hostName) ("noReply@" <> hostName)
+        
       let
         monitor :: UTCTime -> IO ()
         monitor previousTime = do
           debugM logHandler "Monitoring.."
-          sources'' <- filterM (exists . sourcePath) sources'
+          sources'' <- filterM (exists . sourcePath) sources
           now <- getCurrentTime
           let
             handler (InvalidParser (T.unpack -> sourceName) err) = do
               warningM (logHandler <> "." <> sourceName) $ "Invalid parser spec: " <> err
-              return Map.empty
+              return (0, Map.empty)
 
-          messageMaps <- fmap (zip sources'') $ mapConcurrently (handle handler . readSource previousTime now) sources''
+          parsed <- mapConcurrently (handle handler . readSource previousTime now) sources''
+
+          -- Email exceptions, where present.
           let
-            messageMaps'
-              = filter (not . Map.null . snd) messageMaps
-          when (not . null $ messageMaps') $ do
-            hostName <- getHostName
-            infoM logHandler "Mailing.."
+            messageMaps
+              = filter (not . Map.null . snd) . zip sources'' . map snd $ parsed
+          when (not . null $ messageMaps) $ do
+            infoM logHandler "Mailing log exceptions.."
             let
               mail
-                = toMail hostName recipients' messageMaps'
+                = toMail hostAddress recipients messageMaps
               mailWithSubject
                 = mail
                     { mailHeaders = subject : mailHeaders mail }
@@ -202,9 +209,38 @@ main = do
                     = ("Subject", subjectLine)
                     where
                       subjectLine
-                        = "Exceptions in " <> T.intercalate ", " (map (sourceName . fst) . toList $ messageMaps')
+                        = "Exceptions in " <> T.intercalate ", " (map (sourceName . fst) . toList $ messageMaps)
                       
             renderSendMail mailWithSubject
+
+          -- Email log parsing errors, where present.
+          let
+            withErrors
+              = filter ((> 0) . snd) . zip sources'' . map fst $ parsed
+          when (not . null $ withErrors) $ do
+            infoM logHandler "Mailing parsing errors.."
+            let
+              mail
+                = Mail hostAddress recipients [] [] [] [[plainPart body]]
+                where
+                  recipients
+                    = map (Address Nothing) admins
+                  body
+                    = "Log parsing errors in " <> L.intercalate ", " errorSources <> "."
+                    where
+                      errorSources :: [L.Text]
+                      errorSources
+                        = map helper withErrors
+                        where
+                          helper (toLazyText . fromText . sourceName -> sourceName, n)
+                            = sourceName <> " (" <> (L.pack . show) n <> " unparsed lines)"
+              mailWithSubject
+                = mail { mailHeaders = subject : mailHeaders mail }
+                where
+                  subject
+                    = ("Subject", "Log parsing errors in " <> T.intercalate ", " (map (sourceName . fst) . toList $ withErrors))
+            renderSendMail mailWithSubject
+            
           threadDelay (truncate $ 1000000 * runRate)
           monitor now
 
