@@ -5,6 +5,7 @@
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE RecordWildCards #-}
 
 module Main where
 
@@ -16,7 +17,7 @@ import qualified Data.Text as T
 import Data.Time
 import qualified Data.Text.Lazy as L
 import qualified Data.Text.Lazy.IO as L
-import Data.Attoparsec.Text.Lazy (eitherResult, takeTill, parse, isHorizontalSpace)
+import Data.Attoparsec.Text.Lazy (maybeResult, takeTill, parse, isHorizontalSpace)
 import Control.Exception
 import Data.Typeable
 import Data.Foldable
@@ -39,9 +40,10 @@ import System.Log.Handler (setFormatter)
 import Data.List (sortBy)
 import Data.Ord (comparing, Down (..))
 import Control.Concurrent.Async (mapConcurrently)
+import Data.Maybe
 
 data LogMonitorException
-  = LogParsingFailed SourceName String
+  = InvalidParser SourceName String -- ^ Failure constructing log parser from format string.
   deriving (Show, Typeable)
 
 instance Exception LogMonitorException
@@ -82,36 +84,33 @@ readSource
   -> UTCTime -- ^ Upper bound on message time (inclusive)
   -> Source
   -> IO (Map Priority [LogMessage]) -- ^ Log message are stored in descending order of timestamp
-readSource minTime maxTime source = do 
-  lts <- L.lines <$> L.readFile (sourcePath source)
-  let
-    messageMap = do
-      parser <- logMessageParser (formatString source) loggerNameParser
-      let
-        f messageMap lt = do
-          lm <- eitherResult . parse parser $ lt
-          message' <- maybeToEither "No message in format" . R.message $ lm
-          loggerName' <- maybeToEither "No loggerName in format" . R.loggerName $ lm
-          timestamp' <- maybeToEither "No timestamp in format" . fmap zonedTimeToUTC . R.timestamp $ lm
-          priority' <- maybeToEither "No priority in format" . R.priority $ lm
-          if minTime < timestamp' && timestamp' <= maxTime && priority' >= (minPriority source)
-            then do
-              let
-                newMessage
-                  = LogMessage message' loggerName' priority' timestamp'
-                alter Nothing
-                  = Just [newMessage]
-                alter (Just lms)
-                  = Just $ newMessage : lms
-              return $ Map.alter alter priority' messageMap
-            else
-              return messageMap
-      foldlM f Map.empty lts
-  case messageMap of
+readSource minTime maxTime Source {..} = do 
+  lts <- L.lines <$> L.readFile sourcePath
+  case logMessageParser formatString loggerNameParser of
     Left err ->
-      throw $ LogParsingFailed (sourceName source) err
-    Right messageMap' ->
-      return messageMap'
+      throw $ InvalidParser sourceName err
+    Right parser -> do
+      let
+        helper messageMap lt
+          = fromMaybe messageMap $ do
+              lm <- maybeResult . parse parser $ lt
+              message' <- R.message lm
+              loggerName' <- R.loggerName lm
+              timestamp' <- fmap zonedTimeToUTC . R.timestamp $ lm
+              priority' <- R.priority lm
+              if minTime < timestamp' && timestamp' <= maxTime && priority' >= minPriority
+                then do
+                  let
+                    newMessage
+                      = LogMessage message' loggerName' priority' timestamp'
+                    alter Nothing
+                      = Just [newMessage]
+                    alter (Just lms)
+                      = Just $ newMessage : lms
+                  return $ Map.alter alter priority' messageMap
+                else
+                  return messageMap
+      return $ foldl' helper Map.empty lts
   where
     loggerNameParser
       = takeTill isHorizontalSpace
@@ -184,8 +183,8 @@ main = do
           sources'' <- filterM (exists . sourcePath) sources'
           now <- getCurrentTime
           let
-            handler (LogParsingFailed (T.unpack -> sourceName') e) = do
-              warningM (logHandler <> "." <> sourceName') $ "Log parsing failed: " <> e
+            handler (InvalidParser (T.unpack -> sourceName) err) = do
+              warningM (logHandler <> "." <> sourceName) $ "Invalid parser spec: " <> err
               return Map.empty
 
           messageMaps <- fmap (zip sources'') $ mapConcurrently (handle handler . readSource previousTime now) sources''
