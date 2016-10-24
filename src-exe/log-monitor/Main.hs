@@ -7,7 +7,9 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE RecordWildCards #-}
 
-module Main where
+module Main
+  ( main
+  ) where
 
 import Arguments
 
@@ -41,6 +43,7 @@ import Data.List (sortBy)
 import Data.Ord (comparing, Down (..))
 import Control.Concurrent.Async (mapConcurrently)
 import Data.Maybe
+import Data.Fixed
 
 data LogMonitorException
   = InvalidParser SourceName String -- ^ Failure constructing log parser from format string.
@@ -73,20 +76,21 @@ data Config = Config
   , sources :: [Source]
   } deriving (Show, Generic, FromJSON)
   
-maybeToEither :: a -> Maybe b -> Either a b
-maybeToEither a Nothing
-  = Left a
-maybeToEither _ (Just b)
-  = Right b
+data SourceResults = SourceResults
+  { lineCount :: !Integer
+  , parseErrors :: !Integer
+  , messages :: !(Map Priority [LogMessage]) -- ^ Log message are stored in descending order of timestamp.
+  }
 
-type ParseErrorCount = Integer
-
+defaultSourceResults
+  = SourceResults 0 0 Map.empty
+    
 -- | May throw 'LogMonitorException'
 readSource
   :: UTCTime -- ^ Lower bound on message time (exclusive)
   -> UTCTime -- ^ Upper bound on message time (inclusive)
   -> Source
-  -> IO (ParseErrorCount, Map Priority [LogMessage]) -- ^ Log message are stored in descending order of timestamp
+  -> IO SourceResults
 readSource minTime maxTime Source {..} = do 
   lts <- L.lines <$> L.readFile sourcePath
   case logMessageParser formatString loggerNameParser of
@@ -94,26 +98,29 @@ readSource minTime maxTime Source {..} = do
       throw $ InvalidParser sourceName err
     Right parser -> do
       let
-        helper (errorCount, messageMap) lt
-          = fromMaybe (errorCount + 1, messageMap) $ do
+        helper res@SourceResults {..} lt
+          = fromMaybe res { lineCount = lineCount + 1, parseErrors = parseErrors + 1 } $ do
               lm <- maybeResult . parse parser $ lt
-              message' <- R.message lm
-              loggerName' <- R.loggerName lm
-              timestamp' <- fmap zonedTimeToUTC . R.timestamp $ lm
-              priority' <- R.priority lm
-              if minTime < timestamp' && timestamp' <= maxTime && priority' >= minPriority
-                then do
-                  let
-                    newMessage
-                      = LogMessage message' loggerName' priority' timestamp'
-                    alter Nothing
-                      = Just [newMessage]
-                    alter (Just lms)
-                      = Just $ newMessage : lms
-                  return (errorCount, Map.alter alter priority' messageMap)
-                else
-                  return (errorCount, messageMap)
-      return $ foldl' helper (0, Map.empty) lts
+              message <- R.message lm
+              loggerName <- R.loggerName lm
+              timestamp <- fmap zonedTimeToUTC . R.timestamp $ lm
+              priority <- R.priority lm
+              let
+                newMessage
+                  = LogMessage {..}
+                alter Nothing
+                  = Just [newMessage]
+                alter (Just lms)
+                  = Just $ newMessage : lms
+                updatedMessages
+                  = if minTime < timestamp && timestamp <= maxTime && priority >= minPriority
+                      then
+                        Map.alter alter priority messages
+                      else
+                        messages
+              return res { lineCount = lineCount + 1, messages = updatedMessages }
+                
+      return $ foldl' helper defaultSourceResults lts
   where
     loggerNameParser
       = takeTill isHorizontalSpace
@@ -132,12 +139,12 @@ toMail hostAddress addrs messageMaps
       = L.unlines . map toMessage $ messageMaps
       where
         toMessage :: (Source, Map Priority [LogMessage]) -> L.Text
-        toMessage (toLazyText . fromText . sourceName -> sourceName', messageMap) 
+        toMessage (toLazyText . fromText . sourceName -> sourceName, messageMap) 
           = L.unlines $ header : L.empty : samples
           where
             header :: L.Text
             header
-              = "Exceptions in " <> sourceName' <> ": " <> priorityPhrases
+              = "Exceptions in " <> sourceName <> ": " <> priorityPhrases
               where
                 priorityPhrases
                   = L.intercalate ", " $ Map.foldMapWithKey (((return . L.pack) .) . buildPhrase) messageMap
@@ -183,19 +190,19 @@ main = do
         monitor :: UTCTime -> UTCTime -> IO ()
         monitor lastExceptionMailTime lastRunTime = do
           debugM logHandler "Monitoring.."
-          sources'' <- filterM (exists . sourcePath) sources
+          sources' <- filterM (exists . sourcePath) sources
           now <- getCurrentTime
           let
             handler (InvalidParser (T.unpack -> sourceName) err) = do
               warningM (logHandler <> "." <> sourceName) $ "Invalid parser spec: " <> err
-              return (0, Map.empty)
+              return defaultSourceResults
 
-          parsed <- mapConcurrently (handle handler . readSource lastRunTime now) sources''
+          parsed <- mapConcurrently (handle handler . readSource lastRunTime now) sources'
 
           -- Email exceptions, where present.
           let
             messageMaps
-              = filter (not . Map.null . snd) . zip sources'' . map snd $ parsed
+              = filter (not . Map.null . snd) . zip sources' . map messages $ parsed
           when (not . null $ messageMaps) $ do
             infoM logHandler "Mailing log exceptions.."
             let
@@ -216,7 +223,7 @@ main = do
           -- Email log parsing errors, where present.
           let
             withErrors
-              = filter ((> 0) . snd) . zip sources'' . map fst $ parsed
+              = filter ((> 0) . parseErrors . snd) . zip sources' $ parsed
           newExceptionTime <- if not (null withErrors) && diffUTCTime now lastExceptionMailTime >= exceptionRate
             then do
               infoM logHandler "Mailing parsing errors.."
@@ -233,8 +240,13 @@ main = do
                         errorSources
                           = map helper withErrors
                           where
-                            helper (toLazyText . fromText . sourceName -> sourceName, n)
-                              = sourceName <> " (" <> (L.pack . show) n <> " unparsed lines)"
+                            helper :: (Source, SourceResults) -> L.Text
+                            helper (toLazyText . fromText . sourceName -> sourceName, SourceResults {..})
+                              = sourceName <> " (" <> (L.pack . show) parseErrors <> " unparsed lines, " <> (L.pack . show) percentError <> "% of file)"
+                              where
+                                percentError :: Milli
+                                percentError
+                                  = 100 * fromInteger parseErrors / fromInteger lineCount 
                 mailWithSubject
                   = mail { mailHeaders = subject : mailHeaders mail }
                   where
