@@ -9,6 +9,7 @@ import Data.Time
 
 data Arguments = Arguments
   { runRate :: NominalDiffTime
+  , exceptionRate :: NominalDiffTime
   , configFile :: FilePath
   , logFile :: FilePath
   , debug :: Bool
@@ -26,6 +27,13 @@ parseArgs
              <> long "runRate"
              <> metavar "INT"
              <> help "Rough interval (in seconds) between runs of log-monitor (default 300s)"
+              )
+          )
+      <*> ( setDefault 604800 . fmap fromIntegral . option auto $
+              ( short 'e'
+             <> long "exceptionRate"
+             <> metavar "INT"
+             <> help "Interval (in seconds) for which to email admins with log parsing errors (default one week)"
               )
           )
       <*> ( setDefault "log-monitor.yaml" . strOption $
@@ -55,4 +63,3 @@ opts
      <> fullDesc
      <> footer "Log file formats require $msg, $loggername, $utcTime and $prio."
       )
-    

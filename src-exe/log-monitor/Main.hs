@@ -180,8 +180,8 @@ main = do
         return $ Address (Just $ "Log Monitor " <> hostName) ("noReply@" <> hostName)
         
       let
-        monitor :: UTCTime -> IO ()
-        monitor previousTime = do
+        monitor :: UTCTime -> UTCTime -> IO ()
+        monitor exceptionPrevTime previousTime = do
           debugM logHandler "Monitoring.."
           sources'' <- filterM (exists . sourcePath) sources
           now <- getCurrentTime
@@ -217,35 +217,39 @@ main = do
           let
             withErrors
               = filter ((> 0) . snd) . zip sources'' . map fst $ parsed
-          when (not . null $ withErrors) $ do
-            infoM logHandler "Mailing parsing errors.."
-            let
-              mail
-                = Mail hostAddress recipients [] [] [] [[plainPart body]]
-                where
-                  recipients
-                    = map (Address Nothing) admins
-                  body
-                    = "Log parsing errors in " <> L.intercalate ", " errorSources <> "."
-                    where
-                      errorSources :: [L.Text]
-                      errorSources
-                        = map helper withErrors
-                        where
-                          helper (toLazyText . fromText . sourceName -> sourceName, n)
-                            = sourceName <> " (" <> (L.pack . show) n <> " unparsed lines)"
-              mailWithSubject
-                = mail { mailHeaders = subject : mailHeaders mail }
-                where
-                  subject
-                    = ("Subject", "Log parsing errors in " <> T.intercalate ", " (map (sourceName . fst) . toList $ withErrors))
-            renderSendMail mailWithSubject
+          newExceptionTime <- if not (null withErrors) && diffUTCTime now exceptionPrevTime >= exceptionRate
+            then do
+              infoM logHandler "Mailing parsing errors.."
+              let
+                mail
+                  = Mail hostAddress recipients [] [] [] [[plainPart body]]
+                  where
+                    recipients
+                      = map (Address Nothing) admins
+                    body
+                      = "Log parsing errors in " <> L.intercalate ", " errorSources <> "."
+                      where
+                        errorSources :: [L.Text]
+                        errorSources
+                          = map helper withErrors
+                          where
+                            helper (toLazyText . fromText . sourceName -> sourceName, n)
+                              = sourceName <> " (" <> (L.pack . show) n <> " unparsed lines)"
+                mailWithSubject
+                  = mail { mailHeaders = subject : mailHeaders mail }
+                  where
+                    subject
+                      = ("Subject", "Log parsing errors in " <> T.intercalate ", " (map (sourceName . fst) . toList $ withErrors))
+              renderSendMail mailWithSubject
+              return now
+            else
+              return exceptionPrevTime
             
           threadDelay (truncate $ 1000000 * runRate)
-          monitor now
+          monitor newExceptionTime now
 
-      minTime <- addUTCTime (-runRate) <$> getCurrentTime
-      monitor minTime 
+      now <- getCurrentTime
+      monitor (addUTCTime (-exceptionRate) now) (addUTCTime (-runRate) now) 
   where
     initLogging :: Bool -> FilePath -> IO ()
     initLogging debug logFile = do
