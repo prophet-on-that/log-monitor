@@ -24,6 +24,7 @@ description:
   >   sourcePath: /home/user/email-server/log
   >   formatString: "[$utcTime $loggername $prio] $msg"
   >   minPriority: INFO
+extra-source-files: changelog.md
 
 executable log-monitor
   hs-source-dirs: src-exe/log-monitor
