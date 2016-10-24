@@ -181,7 +181,7 @@ main = do
         
       let
         monitor :: UTCTime -> UTCTime -> IO ()
-        monitor exceptionPrevTime previousTime = do
+        monitor lastExceptionMailTime lastRunTime = do
           debugM logHandler "Monitoring.."
           sources'' <- filterM (exists . sourcePath) sources
           now <- getCurrentTime
@@ -190,7 +190,7 @@ main = do
               warningM (logHandler <> "." <> sourceName) $ "Invalid parser spec: " <> err
               return (0, Map.empty)
 
-          parsed <- mapConcurrently (handle handler . readSource previousTime now) sources''
+          parsed <- mapConcurrently (handle handler . readSource lastRunTime now) sources''
 
           -- Email exceptions, where present.
           let
@@ -217,7 +217,7 @@ main = do
           let
             withErrors
               = filter ((> 0) . snd) . zip sources'' . map fst $ parsed
-          newExceptionTime <- if not (null withErrors) && diffUTCTime now exceptionPrevTime >= exceptionRate
+          newExceptionTime <- if not (null withErrors) && diffUTCTime now lastExceptionMailTime >= exceptionRate
             then do
               infoM logHandler "Mailing parsing errors.."
               let
@@ -243,7 +243,7 @@ main = do
               renderSendMail mailWithSubject
               return now
             else
-              return exceptionPrevTime
+              return lastExceptionMailTime
             
           threadDelay (truncate $ 1000000 * runRate)
           monitor newExceptionTime now
